@@ -25,7 +25,7 @@ var serverSDP = [
   "t=0 0",
   "a=ice-ufrag:3081b21e",
   "a=ice-pwd:9b4424d9e8c5e253c0290d63328b55b3",
-  "a=fingerprint:sha-256 87:85:FE:C6:1B:4B:C0:B1:4D:80:93:A0:60:04:FD:4A:EC:09:1E:94:BB:66:FC:71:B3:20:93:41:38:13:FB:D4",
+  "a=fingerprint:sha-256 53:CE:F0:CC:D5:09:EE:CD:A4:AE:31:22:09:EE:27:FE:2B:7D:E7:D4:F1:F6:3B:A5:1F:DB:69:30:19:49:57:1B",
   "m=application 58269 DTLS/SCTP 5000",
   "c=IN IP4 98.244.112.249",
   "a=sctpmap:5000 webrtc-datachannel 16",
@@ -51,11 +51,12 @@ function createConnection() {
     trace('createDataChannel() failed with exception: ' + e.message);
   }
   serverConnection.onicecandidate = gotServerCandidate;
+  serverConnection.onsignalingstatechange = console.log;
+  serverChannel.onmessage = handleMessage;
   serverChannel.onopen = handleServerChannelStateChange;
   serverChannel.onclose = handleServerChannelStateChange;
 
   serverConnection.setRemoteDescription(new SessionDescription(serverOffer), function() {
-    console.log("here", arguments);
     serverConnection.createAnswer(createAnswerCallback, createAnswerErrback);
   }, function() {
     console.error("Error setting remote description", arguments);
