@@ -7,7 +7,6 @@ from twisted.internet.protocol import DatagramProtocol
 from twisted.internet import defer
 import time, socket, math, random, struct, md5, zlib, hmac, hashlib
 
-from passlib.utils import saslprep
 """
 s = STUN()
 reactor.listenUDP(0,s)
@@ -153,6 +152,11 @@ class STUN(DatagramProtocol):
             #self.transport.write("asd;lfakl;sdljkasdlkf", (host, port))
 
     def buildBindSuccessReply(self, requestHash):
+
+        # packet dump of response says we just need
+        # XOR mapped address
+        # message integry
+        # finger print
         response = [
             BINDING_ERROR, # type
             None, # length
@@ -191,6 +195,13 @@ class STUN(DatagramProtocol):
             ptr += attribute_length
     def connectionRefused(self):
         print "noone listening"
+
+FAMILY_IPV4 = 0x01
+FAMILY_IPV6 = 0x02
+
+def encodeMappedAddress(ip_addr, port, family=FAMILY_IPV4):
+    ip_addr = socket.inet_aton(ip_addr)
+    return struct.pack('!xBH4s', family, port, ip_addr)
 
 if __name__ == "__main__":
     from twisted.internet import reactor
