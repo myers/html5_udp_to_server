@@ -77,54 +77,27 @@ class STUN(DatagramProtocol):
     password = None
     state = STATE_UNREADY
     requestAttributes = None
-    def getBindingRequest(self):
-        random.seed(time.time())
-        self.transaction_id = md5.new(str(random.getrandbits(32))).digest()
-        header = struct.pack('!2H', BINDING_REQUEST, 0) + self.transaction_id
-        return header
-    
+
     def startProtocol(self):
         pass
-
-    def request(self, server, port=3478):
-        self.transport.connect( socket.gethostbyname(server), port )
-        self.transport.write(self.getBindingRequest())
-        self.state = STATE_SENT_REQUEST
-        self.result = defer.Deferred()
-        return self.result
-    
-    def decode_username(self, value):
-        self.requestAttributes['username'] = value
-
-    def decode_priority(self, value):
-        self.requestAttributes['priority'] = struct.unpack('!I', value)[0]
-
-    def decode_xor_mapped_address(self, value):
-        if struct.unpack("!H", value[:2])[0] != FAMILY_IPV4:
-            raise Exception("IPv6 not supported yet")
-        binary_port = sxor(MAGIC_COOKIE_STR[:2], value[2:4])
-        binary_ip_address = sxor(MAGIC_COOKIE_STR, value[4:])
-        self.requestAttributes['mapped_address'] = (socket.inet_ntoa(binary_ip_address), struct.unpack("!H", binary_port)[0])
-
-    def decode_ice_controlled(self, value):
-        self.requestAttributes['ice_controlled'] = struct.unpack('!Q', value)[0]
 
     def datagramReceived(self, data, (host, port)):
         self.requestAttributes = {}
         #print "%r %r %r" % (host, port, data,)
         #print "size", len(data)
-        type, length = struct.unpack('!2H', data[:4])
+        packetType, length = struct.unpack('!2H', data[:4])
+        if packetType not in (BINDING_REQUEST, BINDING_RESPONSE,):
+            raise NotSTUNPacket("unknown packet packetType %r" % (packetType,))
+
         #print "header says this is ", length
-        id = data[4:20]
+        self.requestAttributes = {'transaction_id': data[4:20]}
         
         # TODO: verify this has the magic cookie, valid fingerprint and valid message integrity
-        if struct.unpack('!L', id[:4])[0] == MAGIC_COOKIE:
-            #print "magic!"
-            pass
+        if struct.unpack('!L', self.requestAttributes['transaction_id'][:4])[0] != MAGIC_COOKIE:
+            raise IsNotMagicalError()
 
-        attributes = {}
         for attribute_id, value_length, value, startOffset in self.getAttributes(data[20:length+20]):
-            #print "%r %r %r" % (type, value_length, value,)
+            #print "%r %r %r" % (packetType, value_length, value,)
             if attribute_id in STUN_ATTRIBUTES.keys():
                 #print "%s: %r" % (STUN_ATTRIBUTES[attribute_id], value,)
                 method_name = "decode_%s" % (STUN_ATTRIBUTES[attribute_id],)
@@ -151,34 +124,46 @@ class STUN(DatagramProtocol):
                     getattr(self, method_name)(value)
             else:
                 print "unknown attribute %#x" % (attribute_id,)
-            # if type == MAPPED_ADDRESS:
-            #     family, recv_port, ip_addr = struct.unpack('!xBH4s', data)
-            #     ip_addr = socket.inet_ntoa(ip_addr)
-            #     print family, recv_port, ip_addr
-            # elif type == SOURCE_ADDRESS:
-            #     pass
-            # elif type == USERNAME:
-            #     print "username"
-            # elif type == 0x8028:
-            #     print 'fingerprint'
-            # elif type == ICE_CONTROLLED:
-            #     print 'ice controlled'
-            # elif type == PRIORITY:
-            #     print 'priority'
-            # elif type == MESSAGE_INTEGRITY:
-            #     print 'MESSAGE_INTEGRITY'
-            # else:
-            #     print "unknown type %r" % (hex(type),)
-
-        #print self.requestAttributes
-        if type == BINDING_REQUEST:
-            #print "binding request"
+        if packetType == BINDING_REQUEST:
             self.requestRecieved(self.requestAttributes, (host, port,))
-            #self.transport.write("asd;lfakl;sdljkasdlkf", (host, port))
-        elif type == BINDING_RESPONSE:
+        elif packetType == BINDING_RESPONSE:
             self.responseRecieved(self.requestAttributes, (host, port,))
         else:
-            raise Exception("unknown packet type %r" % (type,))
+            raise RuntimeError("Unknown packet")
+
+    def getBindingRequest(self):
+        random.seed(time.time())
+        self.transaction_id = md5.new(str(random.getrandbits(32))).digest()
+        header = struct.pack('!2H', BINDING_REQUEST, 0) + self.transaction_id
+        return header
+    
+    def request(self, server, port=3478):
+        self.transport.connect( socket.gethostbyname(server), port )
+        self.transport.write(self.getBindingRequest())
+        self.state = STATE_SENT_REQUEST
+        self.result = defer.Deferred()
+        return self.result
+    
+    def decode_username(self, value):
+        self.requestAttributes['username'] = value
+
+    def decode_priority(self, value):
+        self.requestAttributes['priority'] = struct.unpack('!I', value)[0]
+
+    def decode_mapped_address(self, value):
+        family, recv_port, ip_addr = struct.unpack('!xBH4s', data)
+        ip_addr = socket.inet_ntoa(ip_addr)
+        self.requestAttributes['mapped_address'] = (ip_addr, recv_port,)
+
+    def decode_xor_mapped_address(self, value):
+        if struct.unpack("!H", value[:2])[0] != FAMILY_IPV4:
+            raise Exception("IPv6 not supported yet")
+        binary_port = sxor(MAGIC_COOKIE_STR[:2], value[2:4])
+        binary_ip_address = sxor(MAGIC_COOKIE_STR, value[4:])
+        self.requestAttributes['mapped_address'] = (socket.inet_ntoa(binary_ip_address), struct.unpack("!H", binary_port)[0])
+
+    def decode_ice_controlled(self, value):
+        self.requestAttributes['ice_controlled'] = struct.unpack('!Q', value)[0]
 
     def requestRecieved(self, attrib, source):
         pass
@@ -186,24 +171,31 @@ class STUN(DatagramProtocol):
     def responseRecieved(self, attrib, source):
         pass
 
-    def buildBindSuccessReply(self, transaction_id, address):
+    def buildBindSuccessReply(self, transactionId, address):
         # packet dump of response says we just need
         # XOR mapped address
         # message integry
         # finger print
         response = [
-            BINDING_RESPONSE, # type
+            struct.pack("!H", BINDING_RESPONSE), # type
             None, # length
-            MAGIC_COOKIE,
-            requestHash['transaction_id'],
-            encodeXORMappedAddress(address)
+            transactionId,
+            encodeXORMappedAddress(address[0], address[1])
         ]
-        response 
+        # HMAC
+        response[1] = struct.pack("!H", len(response[3]) + 24)
+        data_to_hash = ''.join(response)
+        packet_hmac = hmac.new(self.password, data_to_hash, hashlib.sha1).digest()
+        response.append(encodeAttribute('message_integrity', packet_hmac))
 
+        # FINGERPRINT
+        response[1] = struct.pack("!H", len(response[3]) + 24 + 8)
+        data_to_crc32 = ''.join(response)
+        fingerprint = zlib.crc32(data_to_crc32) ^ FINGERPRINT_MASK
+        response.append( encodeAttribute('fingerprint', struct.pack('!i', fingerprint)) )
 
-    def encodeAttribute(self, type, value, encoding="!H"):
-        encodedValue = struct.pack(encoding, value)
-        return [STUN_ATTRIBUTE_CODES[type], struct.pack("!H", len(encodedValue)), encodedValue]
+        return ''.join(response)
+
 
     def receiveBindingResponse(self, (host,port), response):
         for type, length, data in self.getAttributes(response):
@@ -233,28 +225,29 @@ class STUN(DatagramProtocol):
 FAMILY_IPV4 = 0x01
 FAMILY_IPV6 = 0x02
 
+def encodeAttribute(attributeType, value):
+    return ''.join( (struct.pack("!HH", STUN_ATTRIBUTE_CODES[attributeType], len(value)), value,) )
+
 def encodeMappedAddress(ip_addr, port, family=FAMILY_IPV4):
     ip_addr = socket.inet_aton(ip_addr)
     return struct.pack('!xBH4s', family, port, ip_addr)
 
 def encodeXORMappedAddress(ip_addr, port, family=FAMILY_IPV4):
-    attr_type = struct.pack("!H", STUN_ATTRIBUTE_CODES['xor_mapped_address'])
     family = struct.pack("!H", family)
     port = sxor(MAGIC_COOKIE_STR[:2], struct.pack("!H", port))
     ip_address = sxor(MAGIC_COOKIE_STR, socket.inet_aton(ip_addr))
     value = ''.join((family, port, ip_address,))
-    length = struct.pack("!H", len(value))
-    return ''.join((attr_type, length, value,))
-
-class FingerprintMismatch(RuntimeError):
-    pass
-
-class MessageIntegrityMismatch(RuntimeError):
-    pass
+    return encodeAttribute('xor_mapped_address', value)
 
 class NotSTUNPacket(RuntimeError):
     pass
-
+class FingerprintMismatch(NotSTUNPacket):
+    pass
+class MessageIntegrityMismatch(NotSTUNPacket):
+    pass
+class IsNotMagicalError(NotSTUNPacket):
+    pass
+    
 if __name__ == "__main__":
     from twisted.internet import reactor
     from twisted.python import log
