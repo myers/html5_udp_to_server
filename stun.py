@@ -34,6 +34,7 @@ STUN_ATTRIBUTES = {
     0x0009: 'error_code',
     0x000a: 'unknown_attributes',
     0x000b: 'reflected_from',
+    0x0020: 'xor_mapped_address',
     0x8028: 'fingerprint',
     0x8022: 'software',
     0x8023: 'alternate_server',
@@ -51,6 +52,16 @@ STATE_SENT_REQUEST = 1
 
 FINGERPRINT_MASK = 0x5354554e
 MAGIC_COOKIE = 0x2112A442
+MAGIC_COOKIE_STR = struct.pack("!I", MAGIC_COOKIE)
+
+
+def sxor(s1,s2):    
+    # convert strings to a list of character pair tuples
+    # go through each tuple, converting them to ASCII code (ord)
+    # perform exclusive or on the ASCII code
+    # then convert the result back to ASCII (chr)
+    # merge the resulting array of characters as a string
+    return ''.join(chr(ord(a) ^ ord(b)) for a,b in zip(s1,s2))
 
 def dump(data):
     for p in xrange(0, len(data), 16):
@@ -88,41 +99,53 @@ class STUN(DatagramProtocol):
     def decode_priority(self, value):
         self.requestAttributes['priority'] = struct.unpack('!I', value)[0]
 
+    def decode_xor_mapped_address(self, value):
+        if struct.unpack("!H", value[:2])[0] != FAMILY_IPV4:
+            raise Exception("IPv6 not supported yet")
+        binary_port = sxor(MAGIC_COOKIE_STR[:2], value[2:4])
+        binary_ip_address = sxor(MAGIC_COOKIE_STR, value[4:])
+        self.requestAttributes['mapped_address'] = (socket.inet_ntoa(binary_ip_address), struct.unpack("!H", binary_port)[0])
+
     def decode_ice_controlled(self, value):
         self.requestAttributes['ice_controlled'] = struct.unpack('!Q', value)[0]
 
     def datagramReceived(self, data, (host, port)):
         self.requestAttributes = {}
-        print "%r %r %r" % (host, port, data,)
-        print "size", len(data)
+        #print "%r %r %r" % (host, port, data,)
+        #print "size", len(data)
         type, length = struct.unpack('!2H', data[:4])
-        print "header says this is ", length
+        #print "header says this is ", length
         id = data[4:20]
+        
+        # TODO: verify this has the magic cookie, valid fingerprint and valid message integrity
         if struct.unpack('!L', id[:4])[0] == MAGIC_COOKIE:
             #print "magic!"
             pass
+
         attributes = {}
         for attribute_id, value_length, value, startOffset in self.getAttributes(data[20:length+20]):
             #print "%r %r %r" % (type, value_length, value,)
             if attribute_id in STUN_ATTRIBUTES.keys():
-                print "%s: %r" % (STUN_ATTRIBUTES[attribute_id], value,)
+                #print "%s: %r" % (STUN_ATTRIBUTES[attribute_id], value,)
                 method_name = "decode_%s" % (STUN_ATTRIBUTES[attribute_id],)
                 if STUN_ATTRIBUTES[attribute_id] == 'fingerprint':
-                    print "size of fingerprint", len(data[startOffset:])
-                    print "claims it's ", value_length
-                    print "%r" % (zlib.crc32(data[:startOffset]) ^ FINGERPRINT_MASK,)
-                    print "%r" % (struct.unpack("!i", value)[0],)
+                    packet_fingerprint = zlib.crc32(data[:startOffset]) ^ FINGERPRINT_MASK
+                    recorded_fingerprint = struct.unpack("!i", value)[0]
+                    if packet_fingerprint != recorded_fingerprint:
+                        raise FingerprintMismatch()
                 elif STUN_ATTRIBUTES[attribute_id] == 'message_integrity' and self.password:
                     key = self.password
                     #key = hashlib.md5(key).digest()
-                    print "size w/o fingerprint", len(data[:startOffset]) - 20 + 24
-                    print "other", length - 8
+                    #print "size w/o fingerprint", len(data[:startOffset]) - 20 + 24
+                    #print "other", length - 8
                     data_to_hash = data[:2] + struct.pack('!H', len(data[:startOffset]) - 20 + 24) + data[4:startOffset]
-                    print len(data_to_hash), len(data[:startOffset])
+                    #print len(data_to_hash), len(data[:startOffset])
                     #data_to_hash[2:4]
-                    print "%r" % key
-                    print "%r" % hmac.new(key, data_to_hash, hashlib.sha1).digest()
-                    print "%r" % value
+                    #print "%r" % key
+                    packet_hmac = hmac.new(key, data_to_hash, hashlib.sha1).digest()
+                    recorded_hmac = value
+                    if packet_hmac != recorded_hmac:
+                        raise MessageIntegrityMismatch()
 
                 if hasattr(self, method_name):
                     getattr(self, method_name)(value)
@@ -146,27 +169,36 @@ class STUN(DatagramProtocol):
             #     print 'MESSAGE_INTEGRITY'
             # else:
             #     print "unknown type %r" % (hex(type),)
-        print self.requestAttributes
+
+        #print self.requestAttributes
         if type == BINDING_REQUEST:
-            print "binding request"
+            #print "binding request"
+            self.requestRecieved(self.requestAttributes, (host, port,))
             #self.transport.write("asd;lfakl;sdljkasdlkf", (host, port))
+        elif type == BINDING_RESPONSE:
+            self.responseRecieved(self.requestAttributes, (host, port,))
+        else:
+            raise Exception("unknown packet type %r" % (type,))
 
-    def buildBindSuccessReply(self, requestHash):
+    def requestRecieved(self, attrib, source):
+        pass
 
+    def responseRecieved(self, attrib, source):
+        pass
+
+    def buildBindSuccessReply(self, transaction_id, address):
         # packet dump of response says we just need
         # XOR mapped address
         # message integry
         # finger print
         response = [
-            BINDING_ERROR, # type
+            BINDING_RESPONSE, # type
             None, # length
             MAGIC_COOKIE,
             requestHash['transaction_id'],
-            self.encodeAttribute('username', requestHash['username']),
-            self.encodeAttribute('priority', requestHash['priority']),
-            self.encodeAttribute('ice_controlling', requestHash['ice_controlled']),
-            self.encodeAttribute('ice_controlling', requestHash['ice_controlled']),
-            ]
+            encodeXORMappedAddress(address)
+        ]
+        response 
 
 
     def encodeAttribute(self, type, value, encoding="!H"):
@@ -181,6 +213,7 @@ class STUN(DatagramProtocol):
                 self.result.callback( (ip_addr, recv_port) )
             elif type == SOURCE_ADDRESS:
                 pass    
+    
     def getAttributes(self, data):
         # After the STUN header are zero or more attributes.  Each attribute
         # MUST be TLV encoded, with a 16-bit type, 16-bit length, and value.
@@ -193,6 +226,7 @@ class STUN(DatagramProtocol):
             yield type, length, data[ptr+4:ptr+4+length], ptr+20
             attribute_length = 4 + 4 * int(math.ceil(length / 4.0))
             ptr += attribute_length
+
     def connectionRefused(self):
         print "noone listening"
 
@@ -202,6 +236,24 @@ FAMILY_IPV6 = 0x02
 def encodeMappedAddress(ip_addr, port, family=FAMILY_IPV4):
     ip_addr = socket.inet_aton(ip_addr)
     return struct.pack('!xBH4s', family, port, ip_addr)
+
+def encodeXORMappedAddress(ip_addr, port, family=FAMILY_IPV4):
+    attr_type = struct.pack("!H", STUN_ATTRIBUTE_CODES['xor_mapped_address'])
+    family = struct.pack("!H", family)
+    port = sxor(MAGIC_COOKIE_STR[:2], struct.pack("!H", port))
+    ip_address = sxor(MAGIC_COOKIE_STR, socket.inet_aton(ip_addr))
+    value = ''.join((family, port, ip_address,))
+    length = struct.pack("!H", len(value))
+    return ''.join((attr_type, length, value,))
+
+class FingerprintMismatch(RuntimeError):
+    pass
+
+class MessageIntegrityMismatch(RuntimeError):
+    pass
+
+class NotSTUNPacket(RuntimeError):
+    pass
 
 if __name__ == "__main__":
     from twisted.internet import reactor
