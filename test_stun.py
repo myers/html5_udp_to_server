@@ -30,6 +30,30 @@ class STUNTestCase(unittest.TestCase):
         protocol = STUNNode(password='755f33f22509329a49ab3d6420e947e9')
         protocol.datagramReceived(stun_request_1, ('127.0.0.1', 4242,))
 
+    def testBuildRequest(self):
+        stun_request_1 = ''.join([chr(x) for x in STUN_REQUEST_1])
+        protocol = stun.STUN(password='755f33f22509329a49ab3d6420e947e9')
+        testPacket = protocol.buildBindingRequest({
+            'transaction_id': '!\x12\xa4B|S\xf3\x12ySm\x99\xc0\r\x14M', # normally you wouldn't pass this in
+            'username': 'd7de9017:b52d0601',
+            'priority': 1853817087,
+            'ice_controlled': 1139902001367096328
+        })
+        self.assertEqual(stun_request_1, testPacket)
+
+
+    def testBuildAnotherRequest(self):
+        stun_request_1 = ''.join([chr(x) for x in STUN_REQUEST_1])
+        protocol = stun.STUN(password='755f33f22509329a49ab3d6420e947e9')
+        testPacket = protocol.buildBindingRequest({
+            'username': 'd7de9017:b52d0601',
+            'priority': 1853817087,
+            'ice_controlled': 1139902001367096328,
+            'use_candidate': None,
+        })
+        # test by trying to parse this
+        protocol.datagramReceived(testPacket, ('127.0.0.1', 4242,))
+
     def testParseCapturedResponse(self):
         stun_response_1 = ''.join([chr(x) for x in STUN_RESPONSE_1])
         class STUNNode(stun.STUN):
@@ -39,7 +63,7 @@ class STUNTestCase(unittest.TestCase):
         protocol.datagramReceived(stun_response_1, ('127.0.0.1', 4242,))
     
     def testBuildBindSuccessReply(self):
-        stun_request_1 = ''.join([chr(x) for x in STUN_REQUEST_1])
+        #stun_request_1 = ''.join([chr(x) for x in STUN_REQUEST_1])
         stun_response_1 = ''.join([chr(x) for x in STUN_RESPONSE_1])
         protocol = stun.STUN(password='755f33f22509329a49ab3d6420e947e9')
         self.assertEqual( stun_response_1, protocol.buildBindSuccessReply( '!\x12\xa4B|S\xf3\x12ySm\x99\xc0\r\x14M', ('192.168.42.8', 51944,) ) )

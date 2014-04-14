@@ -27,11 +27,11 @@ var serverSDP = [
   "a=ice-pwd:9b4424d9e8c5e253c0290d63328b55b3",
   "a=fingerprint:sha-256 53:CE:F0:CC:D5:09:EE:CD:A4:AE:31:22:09:EE:27:FE:2B:7D:E7:D4:F1:F6:3B:A5:1F:DB:69:30:19:49:57:1B",
   "m=application 4489 DTLS/SCTP 5000",
-  "c=IN IP4 10.1.10.102",
+  "c=IN IP4 192.168.42.112",
   "a=sctpmap:5000 webrtc-datachannel 16",
   "a=setup:actpass",
-  "a=candidate:0 1 UDP 2130379007 10.1.10.102 4488 typ host",
-  "a=candidate:0 2 UDP 2130379006 10.1.10.102 4489 typ host"
+  "a=candidate:0 1 UDP 2130379007 192.168.42.112 4488 typ host",
+  "a=candidate:0 2 UDP 2130379006 192.168.42.112 4489 typ host"
 ].join('\r\n');
 var serverOffer = {"type": "offer", "sdp": serverSDP};
 

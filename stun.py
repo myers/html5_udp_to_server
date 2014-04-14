@@ -6,7 +6,7 @@
 from twisted.internet.protocol import DatagramProtocol
 from twisted.internet import defer
 import time, socket, math, random, struct, md5, zlib, hmac, hashlib
-
+import pprint, traceback
 """
 s = STUN()
 reactor.listenUDP(0,s)
@@ -21,6 +21,9 @@ BINDING_ERROR    = 0x0111
 SS_REQUEST  = 0x0002
 SS_RESPONSE = 0x0102
 SS_ERROR    = 0x0112
+
+FAMILY_IPV4 = 0x01
+FAMILY_IPV6 = 0x02
 
 STUN_ATTRIBUTES = {
     0x0001: 'mapped_address',
@@ -54,40 +57,25 @@ FINGERPRINT_MASK = 0x5354554e
 MAGIC_COOKIE = 0x2112A442
 MAGIC_COOKIE_STR = struct.pack("!I", MAGIC_COOKIE)
 
-
-def sxor(s1,s2):    
-    # convert strings to a list of character pair tuples
-    # go through each tuple, converting them to ASCII code (ord)
-    # perform exclusive or on the ASCII code
-    # then convert the result back to ASCII (chr)
-    # merge the resulting array of characters as a string
-    return ''.join(chr(ord(a) ^ ord(b)) for a,b in zip(s1,s2))
-
-def dump(data):
-    for p in xrange(0, len(data), 16):
-        print ' '.join(['%02X' % ord(x) for x in list(data[p:p+16])])
-
 class STUN(DatagramProtocol):
     """
     Basic (incomplete) STUN implementation. Works for simple cases though
     """
-    def __init__(self, password=None):
-        self.password = password
-
     password = None
     state = STATE_UNREADY
     requestAttributes = None
+    transactionId = None
 
-    def startProtocol(self):
-        pass
+    def __init__(self, password=None):
+       self.password = password
 
     def datagramReceived(self, data, (host, port)):
         self.requestAttributes = {}
         #print "%r %r %r" % (host, port, data,)
         #print "size", len(data)
         packetType, length = struct.unpack('!2H', data[:4])
-        if packetType not in (BINDING_REQUEST, BINDING_RESPONSE,):
-            raise NotSTUNPacket("unknown packet packetType %r" % (packetType,))
+        if packetType not in (BINDING_REQUEST, BINDING_RESPONSE, BINDING_ERROR,):
+            raise NotSTUNPacket("unknown packet packetType %#x" % (packetType,))
 
         #print "header says this is ", length
         self.requestAttributes = {'transaction_id': data[4:20]}
@@ -98,45 +86,38 @@ class STUN(DatagramProtocol):
 
         for attribute_id, value_length, value, startOffset in self.getAttributes(data[20:length+20]):
             #print "%r %r %r" % (packetType, value_length, value,)
-            if attribute_id in STUN_ATTRIBUTES.keys():
-                #print "%s: %r" % (STUN_ATTRIBUTES[attribute_id], value,)
-                method_name = "decode_%s" % (STUN_ATTRIBUTES[attribute_id],)
-                if STUN_ATTRIBUTES[attribute_id] == 'fingerprint':
-                    packet_fingerprint = zlib.crc32(data[:startOffset]) ^ FINGERPRINT_MASK
-                    recorded_fingerprint = struct.unpack("!i", value)[0]
-                    if packet_fingerprint != recorded_fingerprint:
-                        raise FingerprintMismatch()
-                elif STUN_ATTRIBUTES[attribute_id] == 'message_integrity' and self.password:
-                    key = self.password
-                    #key = hashlib.md5(key).digest()
-                    #print "size w/o fingerprint", len(data[:startOffset]) - 20 + 24
-                    #print "other", length - 8
-                    data_to_hash = data[:2] + struct.pack('!H', len(data[:startOffset]) - 20 + 24) + data[4:startOffset]
-                    #print len(data_to_hash), len(data[:startOffset])
-                    #data_to_hash[2:4]
-                    #print "%r" % key
-                    packet_hmac = hmac.new(key, data_to_hash, hashlib.sha1).digest()
-                    recorded_hmac = value
-                    if packet_hmac != recorded_hmac:
-                        raise MessageIntegrityMismatch()
-
-                if hasattr(self, method_name):
-                    getattr(self, method_name)(value)
-            else:
+            if attribute_id not in STUN_ATTRIBUTES.keys():
                 print "unknown attribute %#x" % (attribute_id,)
+                continue
+            #print "%s: %r" % (STUN_ATTRIBUTES[attribute_id], value,)
+            if STUN_ATTRIBUTES[attribute_id] == 'fingerprint':
+                packet_fingerprint = zlib.crc32(data[:startOffset]) ^ FINGERPRINT_MASK
+                recorded_fingerprint = struct.unpack("!i", value)[0]
+                if packet_fingerprint != recorded_fingerprint:
+                    raise FingerprintMismatch()
+            elif STUN_ATTRIBUTES[attribute_id] == 'message_integrity' and self.password:
+                key = self.password
+                data_to_hash = data[:2] + struct.pack('!H', len(data[:startOffset]) - 20 + 24) + data[4:startOffset]
+                packet_hmac = hmac.new(key, data_to_hash, hashlib.sha1).digest()
+                recorded_hmac = value
+                if packet_hmac != recorded_hmac:
+                    raise MessageIntegrityMismatch()
+            else:
+                method_name = "decode_%s" % (STUN_ATTRIBUTES[attribute_id],)
+                if not hasattr(self, method_name):
+                    raise Exception('Cannot decode %r' % (STUN_ATTRIBUTES[attribute_id],))
+                getattr(self, method_name)(value)
+                
         if packetType == BINDING_REQUEST:
             self.requestRecieved(self.requestAttributes, (host, port,))
         elif packetType == BINDING_RESPONSE:
             self.responseRecieved(self.requestAttributes, (host, port,))
+        elif packetType == BINDING_ERROR:
+            raise RuntimeError(self.requestAttributes)
+            #self.responseRecieved(self.requestAttributes, (host, port,))
         else:
             raise RuntimeError("Unknown packet")
 
-    def getBindingRequest(self):
-        random.seed(time.time())
-        self.transaction_id = md5.new(str(random.getrandbits(32))).digest()
-        header = struct.pack('!2H', BINDING_REQUEST, 0) + self.transaction_id
-        return header
-    
     def request(self, server, port=3478):
         self.transport.connect( socket.gethostbyname(server), port )
         self.transport.write(self.getBindingRequest())
@@ -144,6 +125,12 @@ class STUN(DatagramProtocol):
         self.result = defer.Deferred()
         return self.result
     
+    def decode_use_candidate(self, value):
+        assert len(value) == 0, "this should have no value"
+
+    def decode_error_code(self, value):
+        self.requestAttributes['error_code'] = struct.unpack('!I', value[:4])[0]
+
     def decode_username(self, value):
         self.requestAttributes['username'] = value
 
@@ -171,30 +158,55 @@ class STUN(DatagramProtocol):
     def responseRecieved(self, attrib, source):
         pass
 
+    def addMessageIntegrityAndFingerprint(self, packet):
+        # HMAC
+        packet[1] = struct.pack("!H", len(''.join(packet[3:])) + 24)
+        data_to_hash = ''.join(packet)
+        packet_hmac = hmac.new(self.password, data_to_hash, hashlib.sha1).digest()
+        packet.append(encodeAttribute('message_integrity', packet_hmac))
+
+        # FINGERPRINT
+        packet[1] = struct.pack("!H", len(''.join(packet[3:])) + 8)
+        data_to_crc32 = ''.join(packet)
+        fingerprint = zlib.crc32(data_to_crc32) ^ FINGERPRINT_MASK
+        packet.append( encodeAttribute('fingerprint', struct.pack('!i', fingerprint)) )
+
+        return ''.join(packet)
+
+    def buildBindingRequest(self, attribs):
+        if 'transaction_id' in attribs:
+            self.transactionId = attribs['transaction_id']
+        else:
+            self.transactionId = MAGIC_COOKIE_STR + hashlib.md5(str(random.getrandbits(32))).digest()[:12]
+        assert len(self.transactionId) == 16, len(self.transactionId)
+        request = [
+            struct.pack("!H", BINDING_REQUEST), # type
+            struct.pack("!H", 0), # length
+            self.transactionId,
+        ]
+        assert len(''.join(request)) == 20, len(''.join(request))
+        if 'username' in attribs:
+            request.append(encodeUsername(attribs['username']))
+        if 'use_candidate' in attribs:
+            request.append(encodeUseCanidate())
+        if 'priority' in attribs:
+            request.append(encodePriority(attribs['priority']))
+        if 'ice_controlling' in attribs:
+            request.append(encodeIceControlling(attribs['ice_controlling']))
+        if 'ice_controlled' in attribs:
+            request.append(encodeIceControlled(attribs['ice_controlled']))
+
+        return self.addMessageIntegrityAndFingerprint(request)
+
     def buildBindSuccessReply(self, transactionId, address):
-        # packet dump of response says we just need
-        # XOR mapped address
-        # message integry
-        # finger print
         response = [
             struct.pack("!H", BINDING_RESPONSE), # type
             None, # length
             transactionId,
             encodeXORMappedAddress(address[0], address[1])
         ]
-        # HMAC
-        response[1] = struct.pack("!H", len(response[3]) + 24)
-        data_to_hash = ''.join(response)
-        packet_hmac = hmac.new(self.password, data_to_hash, hashlib.sha1).digest()
-        response.append(encodeAttribute('message_integrity', packet_hmac))
 
-        # FINGERPRINT
-        response[1] = struct.pack("!H", len(response[3]) + 24 + 8)
-        data_to_crc32 = ''.join(response)
-        fingerprint = zlib.crc32(data_to_crc32) ^ FINGERPRINT_MASK
-        response.append( encodeAttribute('fingerprint', struct.pack('!i', fingerprint)) )
-
-        return ''.join(response)
+        return self.addMessageIntegrityAndFingerprint(response)
 
 
     def receiveBindingResponse(self, (host,port), response):
@@ -222,11 +234,35 @@ class STUN(DatagramProtocol):
     def connectionRefused(self):
         print "noone listening"
 
-FAMILY_IPV4 = 0x01
-FAMILY_IPV6 = 0x02
+def sxor(s1,s2):    
+    # convert strings to a list of character pair tuples
+    # go through each tuple, converting them to ASCII code (ord)
+    # perform exclusive or on the ASCII code
+    # then convert the result back to ASCII (chr)
+    # merge the resulting array of characters as a string
+    return ''.join(chr(ord(a) ^ ord(b)) for a,b in zip(s1,s2))
 
 def encodeAttribute(attributeType, value):
-    return ''.join( (struct.pack("!HH", STUN_ATTRIBUTE_CODES[attributeType], len(value)), value,) )
+    attrib = [struct.pack("!HH", STUN_ATTRIBUTE_CODES[attributeType], len(value)), value,]
+    padding_length = 4 - (len(value) % 4)
+    if padding_length < 4:
+        attrib.append("\x00" * padding_length)
+    return ''.join(attrib)
+
+def encodeUsername(username):
+    return encodeAttribute('username', username)
+
+def encodePriority(priority):
+    return encodeAttribute('priority', struct.pack("!I", priority))
+
+def encodeIceControlling(value):
+    return encodeAttribute('ice_controlling', struct.pack("!Q", value))
+
+def encodeIceControlled(value):
+    return encodeAttribute('ice_controlled', struct.pack("!Q", value))
+
+def encodeUseCanidate(value=None):
+    return encodeAttribute('use_candidate', '')
 
 def encodeMappedAddress(ip_addr, port, family=FAMILY_IPV4):
     ip_addr = socket.inet_aton(ip_addr)
@@ -247,18 +283,3 @@ class MessageIntegrityMismatch(NotSTUNPacket):
     pass
 class IsNotMagicalError(NotSTUNPacket):
     pass
-    
-if __name__ == "__main__":
-    from twisted.internet import reactor
-    from twisted.python import log
-    import sys
-    #log.startLogging(sys.stdout)
-    s = STUN(password='9b4424d9e8c5e253c0290d63328b55b3')
-    print "STUN server listening on UDP 4488..."
-    reactor.listenUDP(4488, s)
-    #def found( (addr,port) ):
-    #    print "%s:%s" % (addr, port)
-    #    reactor.stop()
-    #s.request('stunserver.org').addCallback(found)
-    reactor.run()
-    
