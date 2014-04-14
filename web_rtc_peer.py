@@ -1,20 +1,58 @@
 #!/usr/bin/env python
-
-from twisted.internet.protocol import Protocol, Factory
-from twisted.web import resource
-from twisted.web.static import File
+from twisted.internet import defer, protocol
+#from twisted.internet.protocol import Protocol, Factory
+from twisted.web import resource, static, server
 from twisted.internet import task
-import json
+import json, traceback, pprint
 
 import stun
 
-class WebRTCSTUNServer(STUN):
+def siteRoot(s):
+    root = static.File('.')
+    root.putChild('answer_sdp', AnswerSDP(s))
+    return root
+
+class AnswerSDP(resource.Resource):
+    def __init__(self, service):
+        resource.Resource.__init__(self)
+        self.service = service
+
+    def render_POST(self, request):
+        values = json.loads(request.content.getvalue())
+        pprint.pprint(values)
+
+        def extractPassword(sdp):
+            sdp = sdp.replace("\r", "")
+            sdp = sdp.split("\n")
+            for line in sdp:
+                if line.startswith('a=ice-pwd:'):
+                    password = line.split(':', 1)[1]
+                elif line.startswith('a=ice-ufrag:'):
+                    username = line.split(':', 1)[1]
+            self.service.addCred(username, password)
+
+        extractPassword(values['sdp'])
+
+        request.setHeader("content-type", "application/json")
+        return json.dumps({'result': 'ok'})
+
+class WebRTCSTUNServer(stun.STUN):
+    def findPasswordFor(self, username):
+        for u, p in self.creds.items():
+            if ":" in username:
+                username, u2 = username.split(":", 1)
+            if u == username:
+                print "password is %r" % (p,)
+                return p
+        raise Exception("couldn't find password %r %r" % (username, self.creds,))
+
     def requestRecieved(self, attribs, source):
         try:
             print "Replying to request from %r" % (source,)
-            self.transport.write(self.buildBindSuccessReply(attribs['transaction_id'], source), source)
-            print "attribs"
             pprint.pprint(attribs)
+
+            reply = self.buildBindSuccessReply(attribs['transaction_id'], attribs['username'], source)
+            self.transport.write(reply, source)
 
             request = {
                 'ice_controlling': attribs['ice_controlled'],
@@ -30,7 +68,7 @@ class WebRTCSTUNServer(STUN):
             print ee
 
 
-class MultiplexingDatagramProtocol(DatagramProtocol):
+class MultiplexingDatagramProtocol(protocol.DatagramProtocol):
     def __init__(self, protocols):
         self.protocols = protocols
 
@@ -52,11 +90,11 @@ if __name__ == '__main__':
     from twisted.python import log
     import sys
 
+    s = WebRTCSTUNServer()
+    # this username/password is hardcoded in script.js 
+    s.addCred('3081b21e', '9b4424d9e8c5e253c0290d63328b55b3')
     log.startLogging(sys.stdout)
-    root = File('.')
-    reactor.listenTCP(8080, root)
-
-    s = WebRTCSTUNServer(password='9b4424d9e8c5e253c0290d63328b55b3')
+    reactor.listenTCP(8080, server.Site(siteRoot(s)))
     m = MultiplexingDatagramProtocol([s])
     print "STUN server listening on UDP 4488..."
     reactor.listenUDP(4488, m)

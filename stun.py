@@ -3,8 +3,7 @@
 
 # http://tools.ietf.org/html/rfc5389
 
-from twisted.internet.protocol import DatagramProtocol
-from twisted.internet import defer
+from twisted.internet import defer, protocol
 import time, socket, math, random, struct, md5, zlib, hmac, hashlib
 import pprint, traceback
 """
@@ -57,17 +56,23 @@ FINGERPRINT_MASK = 0x5354554e
 MAGIC_COOKIE = 0x2112A442
 MAGIC_COOKIE_STR = struct.pack("!I", MAGIC_COOKIE)
 
-class STUN(DatagramProtocol):
+class STUN(protocol.DatagramProtocol):
     """
     Basic (incomplete) STUN implementation. Works for simple cases though
     """
-    password = None
     state = STATE_UNREADY
     requestAttributes = None
     transactionId = None
+    username = None
 
-    def __init__(self, password=None):
-       self.password = password
+    def __init__(self):
+        self.creds = {}
+
+    def addCred(self, username, password):
+        self.creds[username] = password
+
+    def findPasswordFor(self, username):
+        return self.creds[username]
 
     def datagramReceived(self, data, (host, port)):
         self.requestAttributes = {}
@@ -76,6 +81,9 @@ class STUN(DatagramProtocol):
         packetType, length = struct.unpack('!2H', data[:4])
         if packetType not in (BINDING_REQUEST, BINDING_RESPONSE, BINDING_ERROR,):
             raise NotSTUNPacket("unknown packet packetType %#x" % (packetType,))
+
+        if packetType == BINDING_REQUEST:
+            self.username = None
 
         #print "header says this is ", length
         self.requestAttributes = {'transaction_id': data[4:20]}
@@ -95,8 +103,8 @@ class STUN(DatagramProtocol):
                 recorded_fingerprint = struct.unpack("!i", value)[0]
                 if packet_fingerprint != recorded_fingerprint:
                     raise FingerprintMismatch()
-            elif STUN_ATTRIBUTES[attribute_id] == 'message_integrity' and self.password:
-                key = self.password
+            elif STUN_ATTRIBUTES[attribute_id] == 'message_integrity':
+                key = self.findPasswordFor(self.username)
                 data_to_hash = data[:2] + struct.pack('!H', len(data[:startOffset]) - 20 + 24) + data[4:startOffset]
                 packet_hmac = hmac.new(key, data_to_hash, hashlib.sha1).digest()
                 recorded_hmac = value
@@ -132,6 +140,7 @@ class STUN(DatagramProtocol):
         self.requestAttributes['error_code'] = struct.unpack('!I', value[:4])[0]
 
     def decode_username(self, value):
+        self.username = value
         self.requestAttributes['username'] = value
 
     def decode_priority(self, value):
@@ -158,11 +167,13 @@ class STUN(DatagramProtocol):
     def responseRecieved(self, attrib, source):
         pass
 
-    def addMessageIntegrityAndFingerprint(self, packet):
+    def addMessageIntegrityAndFingerprint(self, packet, key):
+
+        print "hmac key %r" % (key,)
         # HMAC
         packet[1] = struct.pack("!H", len(''.join(packet[3:])) + 24)
         data_to_hash = ''.join(packet)
-        packet_hmac = hmac.new(self.password, data_to_hash, hashlib.sha1).digest()
+        packet_hmac = hmac.new(str(key), data_to_hash, hashlib.sha1).digest()
         packet.append(encodeAttribute('message_integrity', packet_hmac))
 
         # FINGERPRINT
@@ -195,18 +206,18 @@ class STUN(DatagramProtocol):
             request.append(encodeIceControlling(attribs['ice_controlling']))
         if 'ice_controlled' in attribs:
             request.append(encodeIceControlled(attribs['ice_controlled']))
+        key = self.findPasswordFor(attribs['username'])
+        return self.addMessageIntegrityAndFingerprint(request, key)
 
-        return self.addMessageIntegrityAndFingerprint(request)
-
-    def buildBindSuccessReply(self, transactionId, address):
+    def buildBindSuccessReply(self, transactionId, username, address):
         response = [
             struct.pack("!H", BINDING_RESPONSE), # type
             None, # length
             transactionId,
             encodeXORMappedAddress(address[0], address[1])
         ]
-
-        return self.addMessageIntegrityAndFingerprint(response)
+        key = self.findPasswordFor(username)
+        return self.addMessageIntegrityAndFingerprint(response, key)
 
 
     def receiveBindingResponse(self, (host,port), response):

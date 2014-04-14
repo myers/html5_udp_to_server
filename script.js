@@ -66,6 +66,11 @@ function createConnection() {
 }
 
 function createAnswerCallback(desc) {
+  $.ajax('/answer_sdp', {
+    data : JSON.stringify(desc),
+    contentType : 'application/json',
+    type : 'POST'
+  });
   console.log('createAnswerCallback result', desc.sdp);
   serverConnection.setLocalDescription(desc);
 }

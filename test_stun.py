@@ -1,17 +1,7 @@
 from twisted.trial import unittest
 import stun
 
-class STUNTestCase(unittest.TestCase):
-    def testWebrtcRequest(self):
-        webrtc_stun_request = "\x00\x01\x00L!\x12\xa4BCW\xe1\xabj\x9bV\xa38SQ\xb1\x00\x06\x00\x113081b21e:24b1caa0\x00\x00\x00\x00$\x00\x04n\xfb\x00\xff\x80)\x00\x08\x8bK\x8e\xab\n\xf1\x00\x07\x00\x08\x00\x14[\xa5i\x95OIM\xd9\xc0\x08e\xa9p\x8a\xf7v'\x16K9\x80(\x00\x04\x96Yv\xf0"
-        #password = '30b4706261556ebb9bc8205f800275c5' # from firefox console
-        password = '9b4424d9e8c5e253c0290d63328b55b3'
-        protocol = stun.STUN(password=password)
-        protocol.datagramReceived(webrtc_stun_request, ('127.0.0.1', 4242,))
-
-    #def testEncodeMappedAddress(self):
-    #    self.assertEqual('', stun.encodeMappedAddress('192.168.42.8', 4242))
-
+class STUNTestCase(unittest.TestCase):    
     def testEncodeXORMappedAddress(self):
         # from the captured request
         requiredResults = '\x00 \x00\x08\x00\x01\xeb\xfa\xe1\xba\x8eJ'
@@ -27,12 +17,14 @@ class STUNTestCase(unittest.TestCase):
                 self.assertEqual('d7de9017:b52d0601', request['username'])
                 self.assertEqual(1853817087, request['priority'])
                 self.assertEqual(1139902001367096328, request['ice_controlled'])
-        protocol = STUNNode(password='755f33f22509329a49ab3d6420e947e9')
+        protocol = STUNNode()
+        protocol.addCred('d7de9017:b52d0601', '755f33f22509329a49ab3d6420e947e9')
         protocol.datagramReceived(stun_request_1, ('127.0.0.1', 4242,))
 
     def testBuildRequest(self):
         stun_request_1 = ''.join([chr(x) for x in STUN_REQUEST_1])
-        protocol = stun.STUN(password='755f33f22509329a49ab3d6420e947e9')
+        protocol = stun.STUN()
+        protocol.addCred('d7de9017:b52d0601', '755f33f22509329a49ab3d6420e947e9')
         testPacket = protocol.buildBindingRequest({
             'transaction_id': '!\x12\xa4B|S\xf3\x12ySm\x99\xc0\r\x14M', # normally you wouldn't pass this in
             'username': 'd7de9017:b52d0601',
@@ -44,7 +36,8 @@ class STUNTestCase(unittest.TestCase):
 
     def testBuildAnotherRequest(self):
         stun_request_1 = ''.join([chr(x) for x in STUN_REQUEST_1])
-        protocol = stun.STUN(password='755f33f22509329a49ab3d6420e947e9')
+        protocol = stun.STUN()
+        protocol.addCred('d7de9017:b52d0601', '755f33f22509329a49ab3d6420e947e9')
         testPacket = protocol.buildBindingRequest({
             'username': 'd7de9017:b52d0601',
             'priority': 1853817087,
@@ -59,14 +52,17 @@ class STUNTestCase(unittest.TestCase):
         class STUNNode(stun.STUN):
             def responseRecieved(stunNode, request, source):
                 self.assertEqual(('192.168.42.8', 51944,), request['mapped_address'])
-        protocol = STUNNode(password='755f33f22509329a49ab3d6420e947e9')
+        protocol = STUNNode()
+        protocol.addCred('d7de9017:b52d0601', '755f33f22509329a49ab3d6420e947e9')
+        protocol.username = 'd7de9017:b52d0601'
         protocol.datagramReceived(stun_response_1, ('127.0.0.1', 4242,))
     
     def testBuildBindSuccessReply(self):
         #stun_request_1 = ''.join([chr(x) for x in STUN_REQUEST_1])
         stun_response_1 = ''.join([chr(x) for x in STUN_RESPONSE_1])
-        protocol = stun.STUN(password='755f33f22509329a49ab3d6420e947e9')
-        self.assertEqual( stun_response_1, protocol.buildBindSuccessReply( '!\x12\xa4B|S\xf3\x12ySm\x99\xc0\r\x14M', ('192.168.42.8', 51944,) ) )
+        protocol = stun.STUN()
+        protocol.addCred('d7de9017:b52d0601', '755f33f22509329a49ab3d6420e947e9')
+        self.assertEqual( stun_response_1, protocol.buildBindSuccessReply( '!\x12\xa4B|S\xf3\x12ySm\x99\xc0\r\x14M', 'd7de9017:b52d0601', ('192.168.42.8', 51944,) ) )
 
 #Captured from Wireshark with two Firefox 28 browser talking to each other
 STUN_REQUEST_1 = [
