@@ -168,8 +168,6 @@ class STUN(protocol.DatagramProtocol):
         pass
 
     def addMessageIntegrityAndFingerprint(self, packet, key):
-
-        print "hmac key %r" % (key,)
         # HMAC
         packet[1] = struct.pack("!H", len(''.join(packet[3:])) + 24)
         data_to_hash = ''.join(packet)
